@@ -1,0 +1,9 @@
+{
+  "fotoperiodo": {
+    "activo": true,
+    "inicio": "14:00",
+    "horas": 4
+  },
+  "luzInvertida": false,
+  "soloFotosConLuz": true
+}
