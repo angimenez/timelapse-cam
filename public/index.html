@@ -23,7 +23,11 @@
   #grilla figcaption { font-size: .75rem; color: #aaa; padding: 2px 0; }
   #visor { position: fixed; inset: 0; background: #000e; display: none; align-items: center; justify-content: center; z-index: 5; }
   #visor img { max-width: 96vw; max-height: 96vh; }
-  #timelapse { border-top: 1px solid #333; padding: 12px; }
+  #ajustes { margin: 10px 0; }
+  #cfgMsg { min-height: 1.4em; }
+  button.grande { font-size: 1.2rem; padding: 12px 28px; background: #166534; border-color: #4ade80; }
+  button.grande.activo { background: #991b1b; border-color: #f87171; }
+  #timelapse { border-top: 1px solid #333; padding: 12px; margin-top: 16px; }
   progress { width: 220px; vertical-align: middle; }
   #videos a { color: #7dd3fc; }
   video { max-width: 100%; max-height: 60vh; display: block; margin-top: 8px; }
@@ -33,14 +37,19 @@
 <nav>
   <button class="tab activa" data-tab="vivo">En vivo</button>
   <button class="tab" data-tab="galeria">Galería</button>
-  <button class="tab" data-tab="ajustes">Configuración</button>
 </nav>
 
 <section id="vivo" class="centro">
-  <img id="foto" alt="esperando foto...">
+  <img id="foto" alt="esperando cámara...">
   <div id="info">Conectando...</div>
-  <button id="btn">Pausar</button>
-  <button class="generar" data-todo="1">Generar timelapse (todas las fotos)</button>
+  <div id="ajustes">
+    <label>Cámara <select id="cfgCamara"></select></label>
+    <button id="cfgRefrescar" title="Volver a buscar cámaras">↻</button>
+    <label>Resolución <select id="cfgResolucion"></select></label>
+    <label>Una foto cada <input type="number" id="cfgIntervalo" min="1" max="86400" step="1" style="width:6em"> segundos</label>
+    <div id="cfgMsg"></div>
+  </div>
+  <button id="btn" class="grande">Generar timelapse</button>
 </section>
 
 <section id="galeria" hidden>
@@ -48,48 +57,33 @@
   <label>Hasta <input type="datetime-local" id="hasta"></label>
   <button id="buscar">Buscar</button>
   <button id="limpiar">Limpiar</button>
-  <button class="generar">Generar timelapse de este rango</button>
   <div id="resumen"></div>
   <div id="grilla"></div>
   <div class="centro">
     <button id="ant">« Anterior</button><span id="pag"></span><button id="sig">Siguiente »</button>
   </div>
+  <div id="timelapse">
+    <strong>Video</strong>
+    <label>FPS <input type="number" id="fps" value="30" min="1" max="120" style="width:5em"></label>
+    <button id="generar">Crear video con las fotos de este rango</button>
+    <span id="estadoTL"></span>
+    <div id="videos"></div>
+    <video id="player" controls hidden></video>
+  </div>
 </section>
-
-<section id="ajustes" hidden>
-  <h3>Configuración</h3>
-  <p>
-    <label>Cámara <select id="cfgCamara"></select></label>
-    <button id="cfgRefrescar" title="Volver a buscar cámaras">↻ Buscar</button>
-  </p>
-  <p><label>Resolución <select id="cfgResolucion"></select></label></p>
-  <p><label>Una foto cada <input type="number" id="cfgIntervalo" min="0.1" max="86400" step="0.1" style="width:6em"> segundos</label></p>
-  <p><label><input type="checkbox" id="cfgGuardar"> Guardar las fotos en disco</label></p>
-  <button id="cfgGuardarBtn">Guardar y aplicar</button>
-  <span id="cfgMsg"></span>
-</section>
-
-<div id="timelapse">
-  <strong>Timelapse</strong>
-  <label>FPS <input type="number" id="fps" value="30" min="1" max="120" style="width:5em"></label>
-  <span id="estadoTL"></span>
-  <div id="videos"></div>
-  <video id="player" controls hidden></video>
-</div>
 
 <div id="visor"><img alt=""></div>
 
 <script>
   const $ = id => document.getElementById(id);
   const aISO = v => v ? new Date(v).toISOString() : '';   // datetime-local (hora local) -> UTC
-  let corriendo = true, pagina = 1;
+  let grabando = false, pagina = 1;
 
   // ---------- Pestañas ----------
   document.querySelectorAll('.tab').forEach(b => b.onclick = () => {
     document.querySelectorAll('.tab').forEach(x => x.classList.toggle('activa', x === b));
-    for (const s of ['vivo', 'galeria', 'ajustes']) $(s).hidden = s !== b.dataset.tab;
+    for (const s of ['vivo', 'galeria']) $(s).hidden = s !== b.dataset.tab;
     if (b.dataset.tab === 'galeria') cargarGaleria();
-    if (b.dataset.tab === 'ajustes') cargarAjustes();
   });
 
   // ---------- En vivo ----------
@@ -97,7 +91,7 @@
   ev.addEventListener('foto', e => {
     const d = JSON.parse(e.data);
     $('foto').src = '/foto?t=' + d.n;
-    $('info').innerHTML = `<span class="ok">Foto #${d.n}</span> · ${new Date(d.ts).toLocaleTimeString()} · ${(d.bytes / 1024).toFixed(1)} KB`;
+    $('info').innerHTML = `<span class="ok">${grabando ? '● Guardando fotos' : 'En vivo'}</span> · ${new Date(d.ts).toLocaleTimeString()}`;
   });
   ev.addEventListener('aviso', e => {
     $('info').innerHTML = `<span class="mal">${JSON.parse(e.data).mensaje}</span>`;
@@ -105,13 +99,15 @@
   ev.onerror = () => { $('info').innerHTML = '<span class="mal">Sin conexión con el servidor</span>'; };
   ev.addEventListener('estado', e => {
     const d = JSON.parse(e.data);
-    corriendo = d.corriendo;
-    $('btn').textContent = corriendo ? 'Pausar' : 'Reanudar';
+    grabando = d.grabando;
+    $('btn').textContent = grabando ? 'Detener timelapse' : 'Generar timelapse';
+    $('btn').classList.toggle('activo', grabando);
+    for (const id of ['cfgCamara', 'cfgResolucion', 'cfgRefrescar']) $(id).disabled = grabando;
     pintarTimelapse(d.timelapse);
   });
-  $('btn').onclick = () => fetch(corriendo ? '/parar' : '/iniciar', { method: 'POST' });
+  $('btn').onclick = () => fetch(grabando ? '/parar' : '/iniciar', { method: 'POST' });
 
-  // ---------- Configuración ----------
+  // ---------- Configuración (se aplica al cambiar cada campo) ----------
   const opciones = (sel, valores, actual) => {
     if (actual && !valores.some(v => v.valor === actual)) valores.unshift({ valor: actual, texto: actual + ' (no detectada)' });
     sel.innerHTML = valores.map(v => `<option value="${v.valor}">${v.texto}</option>`).join('');
@@ -122,24 +118,24 @@
     opciones($('cfgResolucion'), lista.map(r => ({ valor: r, texto: r })), actual);
   }
   async function cargarAjustes() {
-    $('cfgMsg').textContent = '';
     const [cfg, camaras] = await Promise.all([
       fetch('/api/config').then(r => r.json()),
       fetch('/api/camaras').then(r => r.json()),
     ]);
     opciones($('cfgCamara'), camaras.map(c => ({ valor: c.dispositivo, texto: `${c.nombre} (${c.dispositivo})` })), cfg.camara);
     $('cfgIntervalo').value = cfg.intervaloMs / 1000;
-    $('cfgGuardar').checked = cfg.guardar;
     await cargarResoluciones(cfg.camara, cfg.resolucion);
   }
-  $('cfgCamara').onchange = () => cargarResoluciones($('cfgCamara').value, $('cfgResolucion').value);
-  $('cfgRefrescar').onclick = cargarAjustes;
-  $('cfgGuardarBtn').onclick = async () => {
+  async function aplicarAjustes() {
     const r = await fetch('/api/config', { method: 'POST', body: JSON.stringify({
       camara: $('cfgCamara').value, resolucion: $('cfgResolucion').value,
-      intervaloMs: Math.round(Number($('cfgIntervalo').value) * 1000), guardar: $('cfgGuardar').checked }) });
-    $('cfgMsg').innerHTML = r.ok ? '<span class="ok">Guardado y aplicado</span>' : `<span class="mal">${await r.text()}</span>`;
-  };
+      intervaloMs: Math.round(Number($('cfgIntervalo').value) * 1000) }) });
+    $('cfgMsg').innerHTML = r.ok ? '' : `<span class="mal">${await r.text()}</span>`;
+  }
+  $('cfgCamara').onchange = async () => { await cargarResoluciones($('cfgCamara').value); aplicarAjustes(); };
+  $('cfgResolucion').onchange = $('cfgIntervalo').onchange = aplicarAjustes;
+  $('cfgRefrescar').onclick = cargarAjustes;
+  cargarAjustes();
 
   // ---------- Galería ----------
   async function cargarGaleria() {
@@ -167,20 +163,18 @@
   $('visor').onclick = () => { $('visor').style.display = 'none'; };
 
   // ---------- Timelapse ----------
-  document.querySelectorAll('.generar').forEach(b => b.onclick = async () => {
+  $('generar').onclick = async () => {
     const cuerpo = { fps: Number($('fps').value) };
-    if (!b.dataset.todo) {
-      if ($('desde').value) cuerpo.desde = aISO($('desde').value);
-      if ($('hasta').value) cuerpo.hasta = aISO($('hasta').value);
-    }
+    if ($('desde').value) cuerpo.desde = aISO($('desde').value);
+    if ($('hasta').value) cuerpo.hasta = aISO($('hasta').value);
     const r = await fetch('/api/timelapse', { method: 'POST', body: JSON.stringify(cuerpo) });
     if (!r.ok) $('estadoTL').innerHTML = `<span class="mal">${await r.text()}</span>`;
-  });
+  };
 
   let ultimoEstadoTL = null;
   function pintarTimelapse(t) {
     const estado = t && t.estado;
-    document.querySelectorAll('.generar').forEach(b => b.disabled = estado === 'generando');
+    $('generar').disabled = estado === 'generando';
     if (!t) return;
     if (estado === 'generando') {
       $('estadoTL').innerHTML = `<progress max="${t.total}" value="${t.hecho}"></progress> ${t.hecho} / ${t.total} cuadros`;

@@ -22,27 +22,12 @@ El puerto se cambia con una variable de entorno: `PORT=3001 node server.js`.
 
 ## Qué hace
 
-1. **Captura**: mantiene un proceso `ffmpeg` abierto que toma una foto cada N segundos y la guarda en `fotos/` con la fecha UTC como nombre (por ejemplo `2026-10-16T16-18-04-777Z.jpg`). Si la cámara falla, reintenta cada 3 segundos.
-2. **Pantalla web** con tres pestañas:
-   - **En vivo**: última foto recibida, y botones para pausar o reanudar la captura.
-   - **Galería**: fotos paginadas, con filtro por rango de fechas y visor a pantalla completa.
-   - **Configuración**: ver abajo.
-3. **Timelapse**: desde cualquier pestaña se genera un video `.mp4` (H.264) con todas las fotos, o solo con las de un rango de fechas, eligiendo los FPS. Se ve el avance, y los videos quedan en `videos/` para reproducirlos o descargarlos desde la misma pantalla.
+La pantalla web tiene dos pestañas:
 
-## Configuración
+- **En vivo**: muestra la cámara en tiempo real y tiene la configuración (cámara, resolución e intervalo entre fotos). El botón **Generar timelapse** empieza a guardar una foto en `fotos/` cada N segundos (nombre con fecha UTC, por ejemplo `2026-10-16T16-18-04-777Z.jpg`); el mismo botón pasa a **Detener timelapse**. Mientras se guarda no se puede cambiar la cámara ni la resolución.
+- **Galería**: fotos paginadas con filtro por rango de fechas y visor a pantalla completa. Abajo se puede crear un video `.mp4` (H.264) con las fotos del rango, eligiendo los FPS; los videos quedan en `videos/` para reproducirlos o descargarlos.
 
-La pestaña **Configuración** permite cambiar, sin reiniciar el servidor:
-
-| Parámetro | Descripción |
-|---|---|
-| Cámara | Desplegable con las webcams detectadas (`/dev/videoN`). El botón "Buscar" vuelve a escanear. |
-| Resolución | Las que soporta la cámara elegida (MJPEG). |
-| Intervalo | Segundos entre fotos, de 0,1 s hasta 24 h. |
-| Guardar en disco | Si se desmarca, solo se ve en vivo y no se guardan fotos. |
-
-Los cambios se guardan en `config.json` y se mantienen al reiniciar. Si se cambia la cámara, la resolución o el intervalo, la captura se reinicia sola.
-
-Los valores iniciales (antes de que exista `config.json`) salen de variables de entorno: `CAMARA`, `RESOLUCION`, `INTERVALO_MS`, `GUARDAR=0`.
+Si la cámara falla, se reintenta cada 3 segundos. La configuración se aplica al cambiar cada campo y se guarda en `config.json`. Los valores iniciales salen de las variables de entorno `CAMARA`, `RESOLUCION` e `INTERVALO_MS`.
 
 ## Estructura
 
@@ -67,7 +52,7 @@ video.sh        alternativa por terminal: ./video.sh [salida.mp4] arma un video 
 | `POST /api/timelapse` | Genera un video: `{ "fps": 30, "desde": "...", "hasta": "..." }` |
 | `GET /api/config`, `POST /api/config` | Leer y guardar la configuración |
 | `GET /api/camaras`, `GET /api/resoluciones?camara=` | Cámaras detectadas y resoluciones soportadas |
-| `POST /iniciar`, `POST /parar` | Reanudar y pausar la captura |
+| `POST /iniciar`, `POST /parar` | Empezar y detener el guardado de fotos |
 
 ## Consejos para el experimento
 

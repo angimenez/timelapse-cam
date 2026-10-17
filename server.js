@@ -1,5 +1,5 @@
-// Toma fotos con la webcam (ffmpeg) cada N ms, las guarda y las muestra en una pantalla web.
-// Desde la pantalla se pueden ver las fotos y generar videos timelapse. Sin dependencias: Node >= 12 + ffmpeg.
+// Muestra la webcam (ffmpeg) en vivo en una pantalla web. Al iniciar el timelapse guarda una foto cada N ms.
+// Desde la pantalla se pueden ver las fotos y generar videos. Sin dependencias: Node >= 12 + ffmpeg.
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -9,7 +9,9 @@ const PUERTO = Number(process.env.PORT) || 3000;
 const DIR_FOTOS = path.join(__dirname, 'fotos');
 const DIR_VIDEOS = path.join(__dirname, 'videos');
 
-let corriendo = true;
+const FPS_VISTA = 4; // cuadros por segundo de la vista en vivo; el intervalo de guardado se mide aparte
+let grabando = false; // true: se guardan fotos en disco cada intervaloMs
+let proximaFoto = 0; // momento (ms) en que toca la siguiente foto guardada
 let ultima = null; // Buffer del último JPEG
 let contador = 0;
 let job = null; // timelapse en curso: { estado, hecho, total, archivo }
@@ -26,17 +28,16 @@ function emitir(evento, datos) {
   const msg = `event: ${evento}\ndata: ${JSON.stringify(datos)}\n\n`;
   for (const res of clientes) res.write(msg);
 }
-const snapshot = () => Object.assign({ corriendo, config, n: contador, timelapse: job }, estado);
+const snapshot = () => Object.assign({ grabando, config, n: contador, timelapse: job }, estado);
 
 // ---------- Configuración ----------
 // Se edita desde la pantalla y se guarda en config.json. Los valores iniciales salen de las variables
-// de entorno (CAMARA, RESOLUCION, INTERVALO_MS, GUARDAR=0) y config.json las pisa si existe.
+// de entorno (CAMARA, RESOLUCION, INTERVALO_MS) y config.json las pisa si existe.
 const CONFIG_FILE = path.join(__dirname, 'config.json');
 const CONFIG_BASE = {
   camara: process.env.CAMARA || '/dev/video0',
   resolucion: process.env.RESOLUCION || '1920x1080',
-  intervaloMs: Number(process.env.INTERVALO_MS) || 1000, // tiempo entre fotos
-  guardar: process.env.GUARDAR !== '0',                   // false: solo ver en vivo, sin guardar en disco
+  intervaloMs: Number(process.env.INTERVALO_MS) || 60000, // tiempo entre fotos guardadas
 };
 let config = cargarConfig();
 
@@ -50,15 +51,17 @@ function validarConfig(c) {
   if (!/^\/dev\/video\d+$/.test(c.camara)) throw new ErrorUsuario('Cámara inválida');
   if (!/^\d{3,5}x\d{3,5}$/.test(c.resolucion)) throw new ErrorUsuario('Resolución inválida (ej. 1920x1080)');
   const ms = Number(c.intervaloMs);
-  if (!(ms >= 100 && ms <= 86400000)) throw new ErrorUsuario('El intervalo debe estar entre 0,1 s y 24 h');
-  return { camara: c.camara, resolucion: c.resolucion, intervaloMs: Math.round(ms), guardar: !!c.guardar };
+  if (!(ms >= 1000 && ms <= 86400000)) throw new ErrorUsuario('El intervalo debe estar entre 1 s y 24 h');
+  return { camara: c.camara, resolucion: c.resolucion, intervaloMs: Math.round(ms) };
 }
 
 function guardarConfig(nueva) {
   const anterior = config;
-  config = validarConfig(Object.assign({}, config, nueva));
+  const validada = validarConfig(Object.assign({}, config, nueva));
+  const cambioCamara = ['camara', 'resolucion'].some(k => validada[k] !== anterior[k]);
+  if (grabando && cambioCamara) throw new ErrorUsuario('Detené el timelapse para cambiar la cámara o la resolución');
+  config = validada;
   fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
-  const cambioCamara = ['camara', 'resolucion', 'intervaloMs'].some(k => config[k] !== anterior[k]);
   if (cambioCamara) reiniciarCamara();
   emitir('estado', snapshot());
 }
@@ -107,11 +110,11 @@ const JPEG_INI = Buffer.from([0xff, 0xd8]);
 const JPEG_FIN = Buffer.from([0xff, 0xd9]);
 
 function nuevaFoto(jpeg) {
-  if (!corriendo) return;
   ultima = jpeg;
   contador++;
   const ts = new Date();
-  if (config.guardar) {
+  if (grabando && ts.getTime() >= proximaFoto - 1000 / FPS_VISTA / 2) {
+    proximaFoto = Math.max(proximaFoto + config.intervaloMs, ts.getTime());
     const nombre = ts.toISOString().replace(/[:.]/g, '-') + '.jpg';
     fs.writeFile(path.join(DIR_FOTOS, nombre), jpeg, err => {
       if (err) avisar('no se pudo guardar la foto: ' + err.message);
@@ -132,7 +135,7 @@ function iniciarCamara() {
     '-loglevel', 'error',
     '-f', 'v4l2', '-input_format', 'mjpeg', '-video_size', config.resolucion, '-framerate', '30',
     '-i', config.camara,
-    '-vf', `fps=1000/${config.intervaloMs}`,
+    '-vf', `fps=${FPS_VISTA}`,
     '-c:v', 'mjpeg', '-q:v', '2',
     '-f', 'image2pipe', '-',
   ]);
@@ -167,7 +170,7 @@ function iniciarCamara() {
   ff.on('close', code => reintentar(`ffmpeg terminó (${code}), reintentando`));
 }
 
-// Aplica un cambio de cámara/resolución/intervalo: espera a que la anterior suelte el dispositivo
+// Aplica un cambio de cámara/resolución: espera a que la anterior suelte el dispositivo
 function reiniciarCamara() {
   clearTimeout(timerCamara);
   const vieja = camara;
@@ -370,7 +373,8 @@ async function atender(req, res) {
     return responder(res, 202);
   }
   if (post && (url === '/iniciar' || url === '/parar')) {
-    corriendo = url === '/iniciar';
+    grabando = url === '/iniciar';
+    proximaFoto = Date.now(); // la primera foto se guarda enseguida
     emitir('estado', snapshot());
     return responder(res, 204);
   }
@@ -398,7 +402,7 @@ process.on('SIGTERM', salir);
 
 servidor.listen(PUERTO, () => {
   console.log(`Pantalla: http://localhost:${PUERTO}`);
-  console.log(`Webcam: ${config.camara} ${config.resolucion}, una foto cada ${config.intervaloMs} ms, guardar=${config.guardar}`);
+  console.log(`Webcam: ${config.camara} ${config.resolucion}, guardando una foto cada ${config.intervaloMs} ms al iniciar el timelapse`);
   // Restos de un timelapse que quedó a medias si el proceso se cortó
   for (const n of fs.readdirSync(DIR_VIDEOS)) {
     if (n.startsWith('.tmp-')) borrarCarpeta(path.join(DIR_VIDEOS, n));
